@@ -1,8 +1,16 @@
 FROM node:24-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-  git curl sudo less procps \
+  git curl sudo less procps openssh-client \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Install GitHub CLI for HTTPS git auth (gh as credential helper)
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+      -o /usr/share/keyrings/githubcli-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+      > /etc/apt/sources.list.d/github-cli.list && \
+    apt-get update && apt-get install -y --no-install-recommends gh && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Match host user's uid so mounted volumes are readable/writable
 ARG HOST_UID=501

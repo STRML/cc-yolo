@@ -33,6 +33,26 @@ with open(dst, 'w') as f: json.dump(d, f, indent=2)
         -e "HOME=$HOME" \
         -e "TERM=$TERM"
 
+    # Git: mount config and forward SSH agent (Docker Desktop macOS)
+    if test -f "$HOME/.gitconfig"
+        set -a vols -v "$HOME/.gitconfig:$HOME/.gitconfig:ro"
+    end
+    if test -d "$HOME/.ssh"
+        set -a vols -v "$HOME/.ssh:$HOME/.ssh:ro"
+    end
+    if test -d "$HOME/.config/gh"
+        set -a vols -v "$HOME/.config/gh:$HOME/.config/gh:ro"
+    end
+    if test -S /run/host-services/ssh-auth.sock
+        set -a vols \
+            -v /run/host-services/ssh-auth.sock:/run/host-services/ssh-auth.sock \
+            -e SSH_AUTH_SOCK=/run/host-services/ssh-auth.sock
+    else if test -n "$SSH_AUTH_SOCK"
+        set -a vols \
+            -v "$SSH_AUTH_SOCK:$SSH_AUTH_SOCK" \
+            -e SSH_AUTH_SOCK="$SSH_AUTH_SOCK"
+    end
+
     docker run -it --rm $vols $img --dangerously-skip-permissions $argv
 
     rm -f $patched

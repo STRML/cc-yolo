@@ -33,8 +33,16 @@ Write this file to `~/.claude/docker/Dockerfile`:
 FROM node:24-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-  git curl sudo less procps \
+  git curl sudo less procps openssh-client \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Install GitHub CLI for HTTPS git auth (gh as credential helper)
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+      -o /usr/share/keyrings/githubcli-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+      > /etc/apt/sources.list.d/github-cli.list && \
+    apt-get update && apt-get install -y --no-install-recommends gh && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
 ARG HOST_UID=501
 RUN usermod -u $HOST_UID node && \
@@ -94,6 +102,27 @@ with open(dst, 'w') as f: json.dump(d, f, indent=2)
         -e "HOME=$HOME" \
         -e "TERM=$TERM"
 
+    # Git: mount config, SSH, and gh credentials
+    if test -f "$HOME/.gitconfig"
+        set -a vols -v "$HOME/.gitconfig:$HOME/.gitconfig:ro"
+    end
+    if test -d "$HOME/.ssh"
+        set -a vols -v "$HOME/.ssh:$HOME/.ssh:ro"
+    end
+    if test -d "$HOME/.config/gh"
+        set -a vols -v "$HOME/.config/gh:$HOME/.config/gh:ro"
+    end
+    # SSH agent forwarding (Docker Desktop macOS, or native socket)
+    if test -S /run/host-services/ssh-auth.sock
+        set -a vols \
+            -v /run/host-services/ssh-auth.sock:/run/host-services/ssh-auth.sock \
+            -e SSH_AUTH_SOCK=/run/host-services/ssh-auth.sock
+    else if test -n "$SSH_AUTH_SOCK"
+        set -a vols \
+            -v "$SSH_AUTH_SOCK:$SSH_AUTH_SOCK" \
+            -e SSH_AUTH_SOCK="$SSH_AUTH_SOCK"
+    end
+
     docker run -it --rm $vols $img --dangerously-skip-permissions $argv
 
     rm -f $patched
@@ -149,12 +178,26 @@ d.setdefault('projects', {}).setdefault(sys.argv[3], {})['hasTrustDialogAccepted
 with open(dst, 'w') as f: json.dump(d, f, indent=2)
 " "$HOME/.claude.json" "$patched" "$(pwd)"
 
+    local git_vols=()
+    [ -f "$HOME/.gitconfig" ] && git_vols+=(-v "$HOME/.gitconfig:$HOME/.gitconfig:ro")
+    [ -d "$HOME/.ssh" ] && git_vols+=(-v "$HOME/.ssh:$HOME/.ssh:ro")
+    [ -d "$HOME/.config/gh" ] && git_vols+=(-v "$HOME/.config/gh:$HOME/.config/gh:ro")
+    # SSH agent forwarding (Docker Desktop macOS, or native socket)
+    if [ -S /run/host-services/ssh-auth.sock ]; then
+        git_vols+=(-v /run/host-services/ssh-auth.sock:/run/host-services/ssh-auth.sock)
+        git_vols+=(-e SSH_AUTH_SOCK=/run/host-services/ssh-auth.sock)
+    elif [ -n "$SSH_AUTH_SOCK" ]; then
+        git_vols+=(-v "$SSH_AUTH_SOCK:$SSH_AUTH_SOCK")
+        git_vols+=(-e "SSH_AUTH_SOCK=$SSH_AUTH_SOCK")
+    fi
+
     docker run -it --rm \
         -v "$(pwd):$(pwd)" -w "$(pwd)" \
         -v "$HOME/.claude:$HOME/.claude" \
         -v "$patched:$HOME/.claude.json" \
         -e "HOME=$HOME" \
         -e "TERM=$TERM" \
+        "${git_vols[@]}" \
         "$img" --dangerously-skip-permissions "$@"
 
     rm -f "$patched"
@@ -217,6 +260,14 @@ yolo-pull                   # rebuild image with latest claude-code
 Claude Code stores conversation history as `<uuid>.jsonl` under `~/.claude/projects/<slugified-path>/`. The slug is derived from the **absolute path** of the working directory.
 
 `yolo` mounts your project at its real host path (e.g. `/Users/you/code/myproject`) rather than `/workspace`, so the slug inside the container is identical to the one written on your host. This means `--resume <uuid>` finds sessions from both environments.
+
+## Git authentication
+
+The shell functions automatically mount `~/.gitconfig`, `~/.ssh`, and `~/.config/gh` (if they exist) into the container, so git pushes work out of the box.
+
+**SSH remotes**: The functions forward your SSH agent into the container. On Docker Desktop for macOS this uses `/run/host-services/ssh-auth.sock`; on Linux it forwards `$SSH_AUTH_SOCK` directly. Make sure your key is loaded (`ssh-add -l`).
+
+**HTTPS remotes (GitHub)**: If you use `gh` as your git credential helper (`gh auth setup-git`), it works automatically since both `gh` and `~/.config/gh` are available in the container.
 
 ## Note on macOS Keychain
 
