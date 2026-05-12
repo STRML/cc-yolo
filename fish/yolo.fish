@@ -33,6 +33,26 @@ with open(dst, 'w') as f: json.dump(d, f, indent=2)
         -e "HOME=$HOME" \
         -e "TERM=$TERM"
 
+    # Plugins: mount local marketplace directories so plugins from forks/dev installs load
+    set -l known_mktplaces "$HOME/.claude/plugins/known_marketplaces.json"
+    if test -f "$known_mktplaces"
+        for dir in (python3 -c "
+import json, sys
+try:
+    with open(sys.argv[1]) as f: d = json.load(f)
+except Exception: sys.exit(0)
+for v in d.values():
+    if isinstance(v, dict):
+        s = v.get('source', {})
+        if s.get('source') == 'directory' and s.get('path'):
+            print(s['path'])
+" "$known_mktplaces" 2>/dev/null)
+            if test -d "$dir"
+                set -a vols -v "$dir:$dir:ro"
+            end
+        end
+    end
+
     # Git: mount config and forward SSH agent (Docker Desktop macOS)
     if test -f "$HOME/.gitconfig"
         set -a vols -v "$HOME/.gitconfig:$HOME/.gitconfig:ro"

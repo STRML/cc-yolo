@@ -1,7 +1,7 @@
 FROM node:24-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-  git curl sudo less procps openssh-client \
+  git curl sudo less procps openssh-client jq python3-minimal \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Install GitHub CLI for HTTPS git auth (gh as credential helper)

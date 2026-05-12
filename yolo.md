@@ -33,7 +33,7 @@ Write this file to `~/.claude/docker/Dockerfile`:
 FROM node:24-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-  git curl sudo less procps openssh-client \
+  git curl sudo less procps openssh-client jq python3-minimal \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Install GitHub CLI for HTTPS git auth (gh as credential helper)
@@ -101,6 +101,26 @@ with open(dst, 'w') as f: json.dump(d, f, indent=2)
         -v "$patched:$HOME/.claude.json" \
         -e "HOME=$HOME" \
         -e "TERM=$TERM"
+
+    # Plugins: mount local marketplace directories so plugins from forks/dev installs load
+    set -l known_mktplaces "$HOME/.claude/plugins/known_marketplaces.json"
+    if test -f "$known_mktplaces"
+        for dir in (python3 -c "
+import json, sys
+try:
+    with open(sys.argv[1]) as f: d = json.load(f)
+except Exception: sys.exit(0)
+for v in d.values():
+    if isinstance(v, dict):
+        s = v.get('source', {})
+        if s.get('source') == 'directory' and s.get('path'):
+            print(s['path'])
+" "$known_mktplaces" 2>/dev/null)
+            if test -d "$dir"
+                set -a vols -v "$dir:$dir:ro"
+            end
+        end
+    end
 
     # Git: mount config, SSH, and gh credentials
     if test -f "$HOME/.gitconfig"
@@ -178,6 +198,25 @@ d.setdefault('projects', {}).setdefault(sys.argv[3], {})['hasTrustDialogAccepted
 with open(dst, 'w') as f: json.dump(d, f, indent=2)
 " "$HOME/.claude.json" "$patched" "$(pwd)"
 
+    # Plugins: mount local marketplace directories so plugins from forks/dev installs load
+    local plugin_vols=()
+    local known_mktplaces="$HOME/.claude/plugins/known_marketplaces.json"
+    if [ -f "$known_mktplaces" ]; then
+        while IFS= read -r dir; do
+            [ -d "$dir" ] && plugin_vols+=(-v "$dir:$dir:ro")
+        done < <(python3 -c "
+import json, sys
+try:
+    with open(sys.argv[1]) as f: d = json.load(f)
+except Exception: sys.exit(0)
+for v in d.values():
+    if isinstance(v, dict):
+        s = v.get('source', {})
+        if s.get('source') == 'directory' and s.get('path'):
+            print(s['path'])
+" "$known_mktplaces" 2>/dev/null)
+    fi
+
     local git_vols=()
     [ -f "$HOME/.gitconfig" ] && git_vols+=(-v "$HOME/.gitconfig:$HOME/.gitconfig:ro")
     [ -d "$HOME/.ssh" ] && git_vols+=(-v "$HOME/.ssh:$HOME/.ssh:ro")
@@ -197,6 +236,7 @@ with open(dst, 'w') as f: json.dump(d, f, indent=2)
         -v "$patched:$HOME/.claude.json" \
         -e "HOME=$HOME" \
         -e "TERM=$TERM" \
+        "${plugin_vols[@]}" \
         "${git_vols[@]}" \
         "$img" --dangerously-skip-permissions "$@"
 
@@ -260,6 +300,12 @@ yolo-pull                   # rebuild image with latest claude-code
 Claude Code stores conversation history as `<uuid>.jsonl` under `~/.claude/projects/<slugified-path>/`. The slug is derived from the **absolute path** of the working directory.
 
 `yolo` mounts your project at its real host path (e.g. `/Users/you/code/myproject`) rather than `/workspace`, so the slug inside the container is identical to the one written on your host. This means `--resume <uuid>` finds sessions from both environments.
+
+## Plugins and skills
+
+Plugins installed from local directories (forks, dev installs) reference host paths that aren't available in the container by default. The shell functions automatically parse `~/.claude/plugins/known_marketplaces.json` and mount any local marketplace directories read-only into the container. This means your fork-based plugins and their skills work without extra configuration.
+
+The Dockerfile also includes `jq` and `python3` since many plugin hooks depend on them.
 
 ## Git authentication
 
