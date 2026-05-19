@@ -67,6 +67,8 @@ domains=(
     "pypi.org"
     "files.pythonhosted.org"
     "api.anthropic.com"
+    "console.anthropic.com"
+    "claude.ai"
     "statsig.anthropic.com"
     "statsig.com"
     "sentry.io"
