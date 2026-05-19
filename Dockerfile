@@ -24,13 +24,11 @@ ENV NPM_CONFIG_PREFIX=/usr/local/share/npm-global
 ENV PATH=$PATH:/usr/local/share/npm-global/bin
 
 USER node
-RUN npm install -g @anthropic-ai/claude-code@latest
-RUN mkdir -p /home/node/.claude
+RUN npm install -g @anthropic-ai/claude-code@latest && mkdir -p /home/node/.claude
 
 USER root
-COPY init-firewall.sh /usr/local/bin/init-firewall.sh
-COPY entrypoint.sh    /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/entrypoint.sh
+COPY --chmod=755 init-firewall.sh /usr/local/bin/init-firewall.sh
+COPY --chmod=755 entrypoint.sh    /usr/local/bin/entrypoint.sh
 
 WORKDIR /workspace
 

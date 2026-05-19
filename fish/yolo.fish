@@ -12,7 +12,7 @@ function yolo --description "Run Claude Code in Docker sandbox with no permissio
     # Never modify the host file — Claude Code writes to it concurrently
     set -l patched (mktemp)
     python3 -c "
-import json, sys, shutil
+import json, sys
 src, dst = sys.argv[1], sys.argv[2]
 try:
     with open(src) as f: d = json.load(f)

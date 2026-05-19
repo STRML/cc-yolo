@@ -29,7 +29,7 @@ echo $SHELL
 
 Write three files to `~/.claude/docker/`.
 
-**`~/.claude/docker/Dockerfile`**
+**`~/.claude/docker/Dockerfile`** (keep in sync with the `Dockerfile` at the repo root)
 ```dockerfile
 FROM node:24-slim
 
@@ -56,13 +56,11 @@ ENV NPM_CONFIG_PREFIX=/usr/local/share/npm-global
 ENV PATH=$PATH:/usr/local/share/npm-global/bin
 
 USER node
-RUN npm install -g @anthropic-ai/claude-code@latest
-RUN mkdir -p /home/node/.claude
+RUN npm install -g @anthropic-ai/claude-code@latest && mkdir -p /home/node/.claude
 
 USER root
-COPY init-firewall.sh /usr/local/bin/init-firewall.sh
-COPY entrypoint.sh    /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/entrypoint.sh
+COPY --chmod=755 init-firewall.sh /usr/local/bin/init-firewall.sh
+COPY --chmod=755 entrypoint.sh    /usr/local/bin/entrypoint.sh
 
 WORKDIR /workspace
 
@@ -257,10 +255,16 @@ for v in d.values():
         git_vols+=(-e "SSH_AUTH_SOCK=$SSH_AUTH_SOCK")
     fi
 
+    # NET_ADMIN/NET_RAW are needed by init-firewall.sh; both become
+    # inert after gosu drops to the node user.
+    local sec=(
+        --cap-drop=ALL --cap-add=NET_ADMIN --cap-add=NET_RAW
+        --security-opt=no-new-privileges
+        --pids-limit 512
+    )
+
     docker run -it --rm \
-        --cap-drop=ALL --cap-add=NET_ADMIN --cap-add=NET_RAW \
-        --security-opt=no-new-privileges \
-        --pids-limit 512 \
+        "${sec[@]}" \
         -v "$(pwd):$(pwd)" -w "$(pwd)" \
         -v "$HOME/.claude:$HOME/.claude" \
         -v "$patched:$HOME/.claude.json" \

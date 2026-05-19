@@ -28,9 +28,12 @@ if [ -n "$DOCKER_DNS_RULES" ]; then
     echo "$DOCKER_DNS_RULES" | xargs -L 1 iptables -t nat
 fi
 
-# Allow DNS, SSH, and localhost before policy flip.
+# Allow DNS (UDP + TCP for truncated responses), SSH, and localhost
+# before policy flip.
 iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
 iptables -A INPUT  -p udp --sport 53 -j ACCEPT
+iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT
+iptables -A INPUT  -p tcp --sport 53 -m state --state ESTABLISHED -j ACCEPT
 iptables -A OUTPUT -p tcp --dport 22 -j ACCEPT
 iptables -A INPUT  -p tcp --sport 22 -m state --state ESTABLISHED -j ACCEPT
 iptables -A INPUT  -i lo -j ACCEPT
@@ -57,6 +60,7 @@ done < <(echo "$gh_ranges" | jq -r '(.web + .api + .git)[]' | sort -u)
 
 # Resolve and pin every domain we want to reach.
 # Extra domains can be appended via YOLO_EXTRA_DOMAINS="foo.com bar.com".
+# SYNC: keep the "Network egress" section in yolo.md aligned with this list.
 domains=(
     "registry.npmjs.org"
     "registry.yarnpkg.com"
@@ -70,7 +74,11 @@ domains=(
     "objects.githubusercontent.com"
 )
 if [ -n "${YOLO_EXTRA_DOMAINS:-}" ]; then
-    for d in ${YOLO_EXTRA_DOMAINS}; do domains+=("$d"); done
+    # Top-level IFS is "\n\t" so a bare `for d in $VAR` won't split on
+    # spaces. Use read -ra with default IFS for the documented
+    # space-separated format.
+    IFS=' ' read -ra _extra <<< "${YOLO_EXTRA_DOMAINS}"
+    domains+=("${_extra[@]}")
 fi
 for domain in "${domains[@]}"; do
     ips=$(dig +short A "$domain" | awk '$1 ~ /^[0-9.]+$/ {print}')
