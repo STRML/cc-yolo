@@ -49,14 +49,14 @@ if [ -z "$gh_ranges" ] || ! echo "$gh_ranges" | jq -e '.web and .api and .git' >
     echo "ERROR: failed to fetch or parse GitHub meta"
     exit 1
 fi
-# sort -u dedupes; ipset rejects exact duplicates silently with || true.
-# We don't merge overlapping CIDRs (`aggregate` would) — ipset handles
-# thousands of entries fine, so the extra ~50 rows aren't worth a dep.
+# /meta returns IPv4 + IPv6 CIDRs; the ipset is hash:net (IPv4) so the
+# jq filter drops IPv6. sort -u dedupes; ipset silently rejects exact
+# duplicates so we add || true.
 while read -r cidr; do
     [[ "$cidr" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}/[0-9]{1,2}$ ]] || {
-        echo "ERROR: invalid CIDR from GitHub meta: $cidr"; exit 1; }
+        echo "ERROR: invalid IPv4 CIDR from GitHub meta: $cidr"; exit 1; }
     ipset add allowed-domains "$cidr" 2>/dev/null || true
-done < <(echo "$gh_ranges" | jq -r '(.web + .api + .git)[]' | sort -u)
+done < <(echo "$gh_ranges" | jq -r '(.web + .api + .git)[] | select(test("^[0-9.]+/[0-9]+$"))' | sort -u)
 
 # Resolve and pin every domain we want to reach.
 # Extra domains can be appended via YOLO_EXTRA_DOMAINS="foo.com bar.com".

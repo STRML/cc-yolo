@@ -55,12 +55,15 @@ function yolo --description "Run Claude Code in Docker sandbox with no permissio
             -e SSH_AUTH_SOCK="$SSH_AUTH_SOCK"
     end
 
-    # Security hardening: drop every capability, add back the two needed
-    # by init-firewall.sh to configure iptables, and forbid privilege
-    # escalation. The container starts as root only long enough to set
-    # up the egress allowlist, then drops to `node` via gosu.
+    # Security hardening: drop every capability, add back the four needed:
+    # NET_ADMIN/NET_RAW for init-firewall.sh's iptables config, and
+    # SETUID/SETGID so gosu can drop privileges to `node` afterwards.
+    # All four become inert when the child exec'd by gosu runs as a
+    # non-root uid.
     set -l sec \
-        --cap-drop=ALL --cap-add=NET_ADMIN --cap-add=NET_RAW \
+        --cap-drop=ALL \
+        --cap-add=NET_ADMIN --cap-add=NET_RAW \
+        --cap-add=SETUID --cap-add=SETGID \
         --security-opt=no-new-privileges \
         --pids-limit 512
 

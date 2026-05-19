@@ -40,8 +40,8 @@ Write three files to `~/.claude/docker/`.
 FROM node:24-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-  git curl sudo less procps openssh-client jq python3-minimal \
-  iptables ipset dnsutils gosu \
+  ca-certificates git curl sudo less procps openssh-client jq python3-minimal \
+  iptables ipset iproute2 dnsutils gosu \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Install GitHub CLI for HTTPS git auth (gh as credential helper)
@@ -164,10 +164,13 @@ for v in d.values():
             -e SSH_AUTH_SOCK="$SSH_AUTH_SOCK"
     end
 
-    # Hardening: drop every cap, re-add the two needed by the firewall,
-    # forbid privilege escalation, cap process count.
+    # Hardening: drop every cap, re-add the four needed (NET_ADMIN/NET_RAW
+    # for the firewall, SETUID/SETGID for gosu's privilege drop), forbid
+    # privilege escalation, cap process count.
     set -l sec \
-        --cap-drop=ALL --cap-add=NET_ADMIN --cap-add=NET_RAW \
+        --cap-drop=ALL \
+        --cap-add=NET_ADMIN --cap-add=NET_RAW \
+        --cap-add=SETUID --cap-add=SETGID \
         --security-opt=no-new-privileges \
         --pids-limit 512
 
@@ -181,7 +184,9 @@ end
 ```fish
 function yolo-fresh --description "Run Claude Code in Docker sandbox with clean state"
     docker run -it --rm \
-        --cap-drop=ALL --cap-add=NET_ADMIN --cap-add=NET_RAW \
+        --cap-drop=ALL \
+        --cap-add=NET_ADMIN --cap-add=NET_RAW \
+        --cap-add=SETUID --cap-add=SETGID \
         --security-opt=no-new-privileges \
         --pids-limit 512 \
         -v (pwd):/workspace -w /workspace \
@@ -243,10 +248,12 @@ yolo() {
         git_vols+=(-e "SSH_AUTH_SOCK=$SSH_AUTH_SOCK")
     fi
 
-    # NET_ADMIN/NET_RAW are needed by init-firewall.sh; both become
-    # inert after gosu drops to the node user.
+    # NET_ADMIN/NET_RAW for init-firewall.sh, SETUID/SETGID so gosu can
+    # drop to the node user. All become inert once we exec a non-root uid.
     local sec=(
-        --cap-drop=ALL --cap-add=NET_ADMIN --cap-add=NET_RAW
+        --cap-drop=ALL
+        --cap-add=NET_ADMIN --cap-add=NET_RAW
+        --cap-add=SETUID --cap-add=SETGID
         --security-opt=no-new-privileges
         --pids-limit 512
     )
@@ -267,7 +274,9 @@ yolo() {
 
 yolo-fresh() {
     docker run -it --rm \
-        --cap-drop=ALL --cap-add=NET_ADMIN --cap-add=NET_RAW \
+        --cap-drop=ALL \
+        --cap-add=NET_ADMIN --cap-add=NET_RAW \
+        --cap-add=SETUID --cap-add=SETGID \
         --security-opt=no-new-privileges \
         --pids-limit 512 \
         -v "$(pwd):/workspace" -w /workspace \
