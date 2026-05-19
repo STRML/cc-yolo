@@ -20,20 +20,28 @@ docker info
 ```
 If Docker is missing, tell the user to install it and stop.
 
+Verify `jq` is on PATH (used by the shell functions to patch `~/.claude.json` and parse plugin marketplaces):
+```sh
+command -v jq
+```
+If missing, tell the user to install it (`brew install jq` on macOS, `apt install jq` on Debian/Ubuntu) and stop.
+
 Detect the user's shell:
 ```sh
 echo $SHELL
 ```
 
-### 2. Write the Dockerfile
+### 2. Write the Dockerfile and entrypoint scripts
 
-Write this file to `~/.claude/docker/Dockerfile`:
+Write three files to `~/.claude/docker/`.
 
+**`~/.claude/docker/Dockerfile`** (keep in sync with the `Dockerfile` at the repo root)
 ```dockerfile
 FROM node:24-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
   git curl sudo less procps openssh-client jq python3-minimal \
+  iptables ipset dnsutils gosu \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Install GitHub CLI for HTTPS git auth (gh as credential helper)
@@ -50,17 +58,30 @@ RUN usermod -u $HOST_UID node && \
 
 RUN mkdir -p /usr/local/share/npm-global && chown -R node:node /usr/local/share/npm-global
 
-USER node
 ENV NPM_CONFIG_PREFIX=/usr/local/share/npm-global
 ENV PATH=$PATH:/usr/local/share/npm-global/bin
 
-RUN npm install -g @anthropic-ai/claude-code@latest
+USER node
+RUN npm install -g @anthropic-ai/claude-code@latest && mkdir -p /home/node/.claude
 
-RUN mkdir -p /home/node/.claude
+USER root
+COPY --chmod=755 init-firewall.sh /usr/local/bin/init-firewall.sh
+COPY --chmod=755 entrypoint.sh    /usr/local/bin/entrypoint.sh
+
 WORKDIR /workspace
 
-ENTRYPOINT ["claude"]
+# Entrypoint runs as root, configures the egress allowlist via iptables,
+# then drops to the `node` user before exec'ing claude. Requires the
+# container to be launched with --cap-add=NET_ADMIN --cap-add=NET_RAW.
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["--help"]
 ```
+
+**`~/.claude/docker/init-firewall.sh`** — copy verbatim from [`init-firewall.sh`](./init-firewall.sh) in this repo. Restricts outbound traffic to npm, pypi, GitHub, Anthropic API, and a few other essentials. Set `YOLO_NO_FIREWALL=1` in the environment to bypass (debugging only).
+
+**`~/.claude/docker/entrypoint.sh`** — copy verbatim from [`entrypoint.sh`](./entrypoint.sh) in this repo. Runs the firewall as root then drops to the `node` user via gosu.
+
+Make both scripts executable: `chmod +x ~/.claude/docker/init-firewall.sh ~/.claude/docker/entrypoint.sh`
 
 ### 3. Write the shell functions
 
@@ -143,7 +164,14 @@ for v in d.values():
             -e SSH_AUTH_SOCK="$SSH_AUTH_SOCK"
     end
 
-    docker run -it --rm $vols $img --dangerously-skip-permissions $argv
+    # Hardening: drop every cap, re-add the two needed by the firewall,
+    # forbid privilege escalation, cap process count.
+    set -l sec \
+        --cap-drop=ALL --cap-add=NET_ADMIN --cap-add=NET_RAW \
+        --security-opt=no-new-privileges \
+        --pids-limit 512
+
+    docker run -it --rm $sec $vols $img --dangerously-skip-permissions $argv
 
     rm -f $patched
 end
@@ -153,6 +181,9 @@ end
 ```fish
 function yolo-fresh --description "Run Claude Code in Docker sandbox with clean state"
     docker run -it --rm \
+        --cap-drop=ALL --cap-add=NET_ADMIN --cap-add=NET_RAW \
+        --security-opt=no-new-privileges \
+        --pids-limit 512 \
         -v (pwd):/workspace -w /workspace \
         claude-code --dangerously-skip-permissions $argv
 end
@@ -185,18 +216,10 @@ yolo() {
 
     local patched
     patched=$(mktemp)
-    python3 -c "
-import json, sys
-src, dst = sys.argv[1], sys.argv[2]
-try:
-    with open(src) as f: d = json.load(f)
-except (json.JSONDecodeError, FileNotFoundError):
-    d = {}
-d['hasCompletedOnboarding'] = True
-d.setdefault('theme', 'dark')
-d.setdefault('projects', {}).setdefault(sys.argv[3], {})['hasTrustDialogAccepted'] = True
-with open(dst, 'w') as f: json.dump(d, f, indent=2)
-" "$HOME/.claude.json" "$patched" "$(pwd)"
+    local jq_filter='.hasCompletedOnboarding = true | (.theme //= "dark") | (.projects[$proj].hasTrustDialogAccepted = true)'
+    # If the host file is missing or unparseable, fall back to {}.
+    jq --arg proj "$(pwd)" "$jq_filter" "$HOME/.claude.json" >"$patched" 2>/dev/null \
+        || echo '{}' | jq --arg proj "$(pwd)" "$jq_filter" >"$patched"
 
     # Plugins: mount local marketplace directories so plugins from forks/dev installs load
     local plugin_vols=()
@@ -204,17 +227,7 @@ with open(dst, 'w') as f: json.dump(d, f, indent=2)
     if [ -f "$known_mktplaces" ]; then
         while IFS= read -r dir; do
             [ -d "$dir" ] && plugin_vols+=(-v "$dir:$dir:ro")
-        done < <(python3 -c "
-import json, sys
-try:
-    with open(sys.argv[1]) as f: d = json.load(f)
-except Exception: sys.exit(0)
-for v in d.values():
-    if isinstance(v, dict):
-        s = v.get('source', {})
-        if s.get('source') == 'directory' and s.get('path'):
-            print(s['path'])
-" "$known_mktplaces" 2>/dev/null)
+        done < <(jq -r '.[] | select(type == "object") | .source | select(.source == "directory") | .path // empty' "$known_mktplaces" 2>/dev/null)
     fi
 
     local git_vols=()
@@ -230,7 +243,16 @@ for v in d.values():
         git_vols+=(-e "SSH_AUTH_SOCK=$SSH_AUTH_SOCK")
     fi
 
+    # NET_ADMIN/NET_RAW are needed by init-firewall.sh; both become
+    # inert after gosu drops to the node user.
+    local sec=(
+        --cap-drop=ALL --cap-add=NET_ADMIN --cap-add=NET_RAW
+        --security-opt=no-new-privileges
+        --pids-limit 512
+    )
+
     docker run -it --rm \
+        "${sec[@]}" \
         -v "$(pwd):$(pwd)" -w "$(pwd)" \
         -v "$HOME/.claude:$HOME/.claude" \
         -v "$patched:$HOME/.claude.json" \
@@ -245,6 +267,9 @@ for v in d.values():
 
 yolo-fresh() {
     docker run -it --rm \
+        --cap-drop=ALL --cap-add=NET_ADMIN --cap-add=NET_RAW \
+        --security-opt=no-new-privileges \
+        --pids-limit 512 \
         -v "$(pwd):/workspace" -w /workspace \
         claude-code --dangerously-skip-permissions "$@"
 }
@@ -300,6 +325,32 @@ yolo-pull                   # rebuild image with latest claude-code
 Claude Code stores conversation history as `<uuid>.jsonl` under `~/.claude/projects/<slugified-path>/`. The slug is derived from the **absolute path** of the working directory.
 
 `yolo` mounts your project at its real host path (e.g. `/Users/you/code/myproject`) rather than `/workspace`, so the slug inside the container is identical to the one written on your host. This means `--resume <uuid>` finds sessions from both environments.
+
+## Network egress
+
+The container starts as root, runs `init-firewall.sh` to install an iptables
+allowlist, then drops to the `node` user via gosu before `claude` is exec'd.
+By default outbound traffic is permitted only to:
+
+- `registry.npmjs.org`, `registry.yarnpkg.com`
+- `pypi.org`, `files.pythonhosted.org`
+- All GitHub IP ranges (web, api, git) via `api.github.com/meta`
+- `api.anthropic.com`, `statsig.anthropic.com`, `statsig.com`, `sentry.io`
+- `cli.github.com`, `objects.githubusercontent.com`
+- DNS (UDP/53) and SSH (TCP/22)
+- The host LAN /24 (so SSH agent forwarding works on Docker Desktop)
+
+Everything else is REJECTed at the firewall, so a malicious postinstall
+script can't exfiltrate secrets to attacker-controlled domains.
+
+To temporarily extend the allowlist for one session, pass a space-separated
+list via `YOLO_EXTRA_DOMAINS`:
+
+```sh
+docker run … -e YOLO_EXTRA_DOMAINS="deb.debian.org security.debian.org" …
+```
+
+To skip the firewall entirely (debugging only), set `YOLO_NO_FIREWALL=1`.
 
 ## Plugins and skills
 

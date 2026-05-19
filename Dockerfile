@@ -2,6 +2,7 @@ FROM node:24-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
   git curl sudo less procps openssh-client jq python3-minimal \
+  iptables ipset dnsutils gosu \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Install GitHub CLI for HTTPS git auth (gh as credential helper)
@@ -19,13 +20,20 @@ RUN usermod -u $HOST_UID node && \
 
 RUN mkdir -p /usr/local/share/npm-global && chown -R node:node /usr/local/share/npm-global
 
-USER node
 ENV NPM_CONFIG_PREFIX=/usr/local/share/npm-global
 ENV PATH=$PATH:/usr/local/share/npm-global/bin
 
-RUN npm install -g @anthropic-ai/claude-code@latest
+USER node
+RUN npm install -g @anthropic-ai/claude-code@latest && mkdir -p /home/node/.claude
 
-RUN mkdir -p /home/node/.claude
+USER root
+COPY --chmod=755 init-firewall.sh /usr/local/bin/init-firewall.sh
+COPY --chmod=755 entrypoint.sh    /usr/local/bin/entrypoint.sh
+
 WORKDIR /workspace
 
-ENTRYPOINT ["claude"]
+# Entrypoint runs as root, configures the egress allowlist via iptables,
+# then drops to the `node` user before exec'ing claude. Requires the
+# container to be launched with --cap-add=NET_ADMIN --cap-add=NET_RAW.
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["--help"]
