@@ -46,11 +46,14 @@ if [ -z "$gh_ranges" ] || ! echo "$gh_ranges" | jq -e '.web and .api and .git' >
     echo "ERROR: failed to fetch or parse GitHub meta"
     exit 1
 fi
+# sort -u dedupes; ipset rejects exact duplicates silently with || true.
+# We don't merge overlapping CIDRs (`aggregate` would) — ipset handles
+# thousands of entries fine, so the extra ~50 rows aren't worth a dep.
 while read -r cidr; do
     [[ "$cidr" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}/[0-9]{1,2}$ ]] || {
         echo "ERROR: invalid CIDR from GitHub meta: $cidr"; exit 1; }
-    ipset add allowed-domains "$cidr"
-done < <(echo "$gh_ranges" | jq -r '(.web + .api + .git)[]' | aggregate -q)
+    ipset add allowed-domains "$cidr" 2>/dev/null || true
+done < <(echo "$gh_ranges" | jq -r '(.web + .api + .git)[]' | sort -u)
 
 # Resolve and pin every domain we want to reach.
 # Extra domains can be appended via YOLO_EXTRA_DOMAINS="foo.com bar.com".
@@ -70,7 +73,7 @@ if [ -n "${YOLO_EXTRA_DOMAINS:-}" ]; then
     for d in ${YOLO_EXTRA_DOMAINS}; do domains+=("$d"); done
 fi
 for domain in "${domains[@]}"; do
-    ips=$(dig +short +noall +answer A "$domain" | awk '$1 ~ /^[0-9.]+$/ {print}')
+    ips=$(dig +short A "$domain" | awk '$1 ~ /^[0-9.]+$/ {print}')
     if [ -z "$ips" ]; then
         echo "WARN: failed to resolve $domain, skipping" >&2
         continue

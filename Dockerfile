@@ -2,7 +2,7 @@ FROM node:24-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
   git curl sudo less procps openssh-client jq python3-minimal \
-  iptables ipset dnsutils aggregate gosu \
+  iptables ipset dnsutils gosu \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Install GitHub CLI for HTTPS git auth (gh as credential helper)
@@ -38,3 +38,4 @@ WORKDIR /workspace
 # then drops to the `node` user before exec'ing claude. Requires the
 # container to be launched with --cap-add=NET_ADMIN --cap-add=NET_RAW.
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["--help"]
