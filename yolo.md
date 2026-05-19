@@ -20,6 +20,12 @@ docker info
 ```
 If Docker is missing, tell the user to install it and stop.
 
+Verify `jq` is on PATH (used by the shell functions to patch `~/.claude.json` and parse plugin marketplaces):
+```sh
+command -v jq
+```
+If missing, tell the user to install it (`brew install jq` on macOS, `apt install jq` on Debian/Ubuntu) and stop.
+
 Detect the user's shell:
 ```sh
 echo $SHELL
@@ -210,18 +216,10 @@ yolo() {
 
     local patched
     patched=$(mktemp)
-    python3 -c "
-import json, sys
-src, dst = sys.argv[1], sys.argv[2]
-try:
-    with open(src) as f: d = json.load(f)
-except (json.JSONDecodeError, FileNotFoundError):
-    d = {}
-d['hasCompletedOnboarding'] = True
-d.setdefault('theme', 'dark')
-d.setdefault('projects', {}).setdefault(sys.argv[3], {})['hasTrustDialogAccepted'] = True
-with open(dst, 'w') as f: json.dump(d, f, indent=2)
-" "$HOME/.claude.json" "$patched" "$(pwd)"
+    local jq_filter='.hasCompletedOnboarding = true | (.theme //= "dark") | (.projects[$proj].hasTrustDialogAccepted = true)'
+    # If the host file is missing or unparseable, fall back to {}.
+    jq --arg proj "$(pwd)" "$jq_filter" "$HOME/.claude.json" >"$patched" 2>/dev/null \
+        || echo '{}' | jq --arg proj "$(pwd)" "$jq_filter" >"$patched"
 
     # Plugins: mount local marketplace directories so plugins from forks/dev installs load
     local plugin_vols=()
@@ -229,17 +227,7 @@ with open(dst, 'w') as f: json.dump(d, f, indent=2)
     if [ -f "$known_mktplaces" ]; then
         while IFS= read -r dir; do
             [ -d "$dir" ] && plugin_vols+=(-v "$dir:$dir:ro")
-        done < <(python3 -c "
-import json, sys
-try:
-    with open(sys.argv[1]) as f: d = json.load(f)
-except Exception: sys.exit(0)
-for v in d.values():
-    if isinstance(v, dict):
-        s = v.get('source', {})
-        if s.get('source') == 'directory' and s.get('path'):
-            print(s['path'])
-" "$known_mktplaces" 2>/dev/null)
+        done < <(jq -r '.[] | select(type == "object") | .source | select(.source == "directory") | .path // empty' "$known_mktplaces" 2>/dev/null)
     fi
 
     local git_vols=()

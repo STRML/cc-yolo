@@ -80,17 +80,30 @@ if [ -n "${YOLO_EXTRA_DOMAINS:-}" ]; then
     IFS=' ' read -ra _extra <<< "${YOLO_EXTRA_DOMAINS}"
     domains+=("${_extra[@]}")
 fi
+# Resolve in parallel — sequential dig is the dominant startup cost.
+# Each subshell captures its own $i and writes to its own file so we
+# don't worry about interleaved appends.
+tmpdir=$(mktemp -d)
+i=0
 for domain in "${domains[@]}"; do
-    ips=$(dig +short A "$domain" | awk '$1 ~ /^[0-9.]+$/ {print}')
-    if [ -z "$ips" ]; then
-        echo "WARN: failed to resolve $domain, skipping" >&2
-        continue
-    fi
+    (
+        ips=$(dig +short A "$domain" | awk '$1 ~ /^[0-9.]+$/ {print}')
+        if [ -z "$ips" ]; then
+            echo "WARN: failed to resolve $domain, skipping" >&2
+        else
+            printf '%s\n' "$ips" > "$tmpdir/$i.ips"
+        fi
+    ) &
+    i=$((i + 1))
+done
+wait
+if compgen -G "$tmpdir/*.ips" >/dev/null; then
     while read -r ip; do
         [[ "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]] || continue
         ipset add allowed-domains "$ip" 2>/dev/null || true
-    done < <(echo "$ips")
-done
+    done < <(cat "$tmpdir"/*.ips)
+fi
+rm -rf "$tmpdir"
 
 # Allow the host network so SSH agent forwarding and `host.docker.internal`
 # still work for Docker Desktop on macOS.
