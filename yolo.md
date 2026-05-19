@@ -25,15 +25,17 @@ Detect the user's shell:
 echo $SHELL
 ```
 
-### 2. Write the Dockerfile
+### 2. Write the Dockerfile and entrypoint scripts
 
-Write this file to `~/.claude/docker/Dockerfile`:
+Write three files to `~/.claude/docker/`.
 
+**`~/.claude/docker/Dockerfile`**
 ```dockerfile
 FROM node:24-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
   git curl sudo less procps openssh-client jq python3-minimal \
+  iptables ipset dnsutils aggregate gosu \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Install GitHub CLI for HTTPS git auth (gh as credential helper)
@@ -50,17 +52,31 @@ RUN usermod -u $HOST_UID node && \
 
 RUN mkdir -p /usr/local/share/npm-global && chown -R node:node /usr/local/share/npm-global
 
-USER node
 ENV NPM_CONFIG_PREFIX=/usr/local/share/npm-global
 ENV PATH=$PATH:/usr/local/share/npm-global/bin
 
+USER node
 RUN npm install -g @anthropic-ai/claude-code@latest
-
 RUN mkdir -p /home/node/.claude
+
+USER root
+COPY init-firewall.sh /usr/local/bin/init-firewall.sh
+COPY entrypoint.sh    /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/entrypoint.sh
+
 WORKDIR /workspace
 
-ENTRYPOINT ["claude"]
+# Entrypoint runs as root, configures the egress allowlist via iptables,
+# then drops to the `node` user before exec'ing claude. Requires the
+# container to be launched with --cap-add=NET_ADMIN --cap-add=NET_RAW.
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 ```
+
+**`~/.claude/docker/init-firewall.sh`** — copy verbatim from [`init-firewall.sh`](./init-firewall.sh) in this repo. Restricts outbound traffic to npm, pypi, GitHub, Anthropic API, and a few other essentials. Set `YOLO_NO_FIREWALL=1` in the environment to bypass (debugging only).
+
+**`~/.claude/docker/entrypoint.sh`** — copy verbatim from [`entrypoint.sh`](./entrypoint.sh) in this repo. Runs the firewall as root then drops to the `node` user via gosu.
+
+Make both scripts executable: `chmod +x ~/.claude/docker/init-firewall.sh ~/.claude/docker/entrypoint.sh`
 
 ### 3. Write the shell functions
 
@@ -143,7 +159,14 @@ for v in d.values():
             -e SSH_AUTH_SOCK="$SSH_AUTH_SOCK"
     end
 
-    docker run -it --rm $vols $img --dangerously-skip-permissions $argv
+    # Hardening: drop every cap, re-add the two needed by the firewall,
+    # forbid privilege escalation, cap process count.
+    set -l sec \
+        --cap-drop=ALL --cap-add=NET_ADMIN --cap-add=NET_RAW \
+        --security-opt=no-new-privileges \
+        --pids-limit 512
+
+    docker run -it --rm $sec $vols $img --dangerously-skip-permissions $argv
 
     rm -f $patched
 end
@@ -153,6 +176,9 @@ end
 ```fish
 function yolo-fresh --description "Run Claude Code in Docker sandbox with clean state"
     docker run -it --rm \
+        --cap-drop=ALL --cap-add=NET_ADMIN --cap-add=NET_RAW \
+        --security-opt=no-new-privileges \
+        --pids-limit 512 \
         -v (pwd):/workspace -w /workspace \
         claude-code --dangerously-skip-permissions $argv
 end
@@ -231,6 +257,9 @@ for v in d.values():
     fi
 
     docker run -it --rm \
+        --cap-drop=ALL --cap-add=NET_ADMIN --cap-add=NET_RAW \
+        --security-opt=no-new-privileges \
+        --pids-limit 512 \
         -v "$(pwd):$(pwd)" -w "$(pwd)" \
         -v "$HOME/.claude:$HOME/.claude" \
         -v "$patched:$HOME/.claude.json" \
@@ -245,6 +274,9 @@ for v in d.values():
 
 yolo-fresh() {
     docker run -it --rm \
+        --cap-drop=ALL --cap-add=NET_ADMIN --cap-add=NET_RAW \
+        --security-opt=no-new-privileges \
+        --pids-limit 512 \
         -v "$(pwd):/workspace" -w /workspace \
         claude-code --dangerously-skip-permissions "$@"
 }
@@ -300,6 +332,32 @@ yolo-pull                   # rebuild image with latest claude-code
 Claude Code stores conversation history as `<uuid>.jsonl` under `~/.claude/projects/<slugified-path>/`. The slug is derived from the **absolute path** of the working directory.
 
 `yolo` mounts your project at its real host path (e.g. `/Users/you/code/myproject`) rather than `/workspace`, so the slug inside the container is identical to the one written on your host. This means `--resume <uuid>` finds sessions from both environments.
+
+## Network egress
+
+The container starts as root, runs `init-firewall.sh` to install an iptables
+allowlist, then drops to the `node` user via gosu before `claude` is exec'd.
+By default outbound traffic is permitted only to:
+
+- `registry.npmjs.org`, `registry.yarnpkg.com`
+- `pypi.org`, `files.pythonhosted.org`
+- All GitHub IP ranges (web, api, git) via `api.github.com/meta`
+- `api.anthropic.com`, `statsig.anthropic.com`, `statsig.com`, `sentry.io`
+- `cli.github.com`, `objects.githubusercontent.com`
+- DNS (UDP/53) and SSH (TCP/22)
+- The host LAN /24 (so SSH agent forwarding works on Docker Desktop)
+
+Everything else is REJECTed at the firewall, so a malicious postinstall
+script can't exfiltrate secrets to attacker-controlled domains.
+
+To temporarily extend the allowlist for one session, pass a space-separated
+list via `YOLO_EXTRA_DOMAINS`:
+
+```sh
+docker run … -e YOLO_EXTRA_DOMAINS="deb.debian.org security.debian.org" …
+```
+
+To skip the firewall entirely (debugging only), set `YOLO_NO_FIREWALL=1`.
 
 ## Plugins and skills
 

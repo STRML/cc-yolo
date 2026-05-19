@@ -73,7 +73,16 @@ for v in d.values():
             -e SSH_AUTH_SOCK="$SSH_AUTH_SOCK"
     end
 
-    docker run -it --rm $vols $img --dangerously-skip-permissions $argv
+    # Security hardening: drop every capability, add back the two needed
+    # by init-firewall.sh to configure iptables, and forbid privilege
+    # escalation. The container starts as root only long enough to set
+    # up the egress allowlist, then drops to `node` via gosu.
+    set -l sec \
+        --cap-drop=ALL --cap-add=NET_ADMIN --cap-add=NET_RAW \
+        --security-opt=no-new-privileges \
+        --pids-limit 512
+
+    docker run -it --rm $sec $vols $img --dangerously-skip-permissions $argv
 
     rm -f $patched
 end
