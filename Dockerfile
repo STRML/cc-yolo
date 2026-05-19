@@ -1,7 +1,7 @@
 FROM node:24-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-  ca-certificates git curl sudo less procps openssh-client jq python3-minimal \
+  ca-certificates git curl sudo less procps openssh-client jq python3 \
   iptables ipset iproute2 dnsutils gosu \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
 

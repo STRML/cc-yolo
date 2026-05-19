@@ -13,7 +13,7 @@ Tell Claude:
 ```sh
 yolo                        # new session in current directory
 yolo --resume <uuid>        # resume a previous session
-yolo-fresh                  # clean container, no ~/.claude mounted
+yolo-incognito              # disposable container, no host state mounted
 yolo-pull                   # rebuild image with latest claude-code
 ```
 

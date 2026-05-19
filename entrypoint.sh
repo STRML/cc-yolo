@@ -10,4 +10,6 @@ else
 fi
 
 # gosu drops uid/gid + supplementary groups + capabilities cleanly.
-exec gosu node claude "$@"
+# It also rewrites HOME to /home/node from passwd; re-pin it to the
+# host HOME so mounted ~/.claude and ~/.claude.json paths resolve.
+exec gosu node env HOME="$HOME" claude "$@"

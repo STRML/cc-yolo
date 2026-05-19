@@ -1,4 +1,4 @@
-function yolo-fresh --description "Run Claude Code in Docker sandbox with clean state"
+function yolo-incognito --description "Run Claude Code in Docker sandbox with no host state mounted"
     docker run -it --rm \
         --cap-drop=ALL \
         --cap-add=NET_ADMIN --cap-add=NET_RAW \

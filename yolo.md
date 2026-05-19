@@ -180,9 +180,9 @@ for v in d.values():
 end
 ```
 
-**`~/.config/fish/functions/yolo-fresh.fish`**
+**`~/.config/fish/functions/yolo-incognito.fish`**
 ```fish
-function yolo-fresh --description "Run Claude Code in Docker sandbox with clean state"
+function yolo-incognito --description "Run Claude Code in Docker sandbox with no host state mounted"
     docker run -it --rm \
         --cap-drop=ALL \
         --cap-add=NET_ADMIN --cap-add=NET_RAW \
@@ -272,7 +272,7 @@ yolo() {
     rm -f "$patched"
 }
 
-yolo-fresh() {
+yolo-incognito() {
     docker run -it --rm \
         --cap-drop=ALL \
         --cap-add=NET_ADMIN --cap-add=NET_RAW \
@@ -325,7 +325,7 @@ You should see the Claude Code version printed from inside the container. Instal
 ```sh
 yolo                        # new session in current directory
 yolo --resume <uuid>        # resume a previous session
-yolo-fresh                  # clean container, no ~/.claude mounted
+yolo-incognito              # disposable container, no host state mounted
 yolo-pull                   # rebuild image with latest claude-code
 ```
 
